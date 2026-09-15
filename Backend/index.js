@@ -23,6 +23,7 @@ app.use("/uploads", express.static(uploadsDir));
 app.use("/api/v1/auth", authRouter);
 app.use("/api/v1/users", userRouter);
 app.use("/api/v1/restaurants", restaurantRouter);
+app.use("/api/v1/listings", restaurantRouter);
 
 app.use((req, res, next) => {
   res.status(404).json({

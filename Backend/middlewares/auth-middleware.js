@@ -42,4 +42,29 @@ const authenticateMiddleware = async (req, res, next) => {
   }
 };
 
+const optionalAuthenticate = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization || req.headers.Authorization;
+    if (!authHeader || typeof authHeader !== "string" || !authHeader.startsWith("Bearer ")) {
+      return next();
+    }
+    const token = authHeader.split(" ")[1];
+    if (!token || token === "null" || token === "undefined") {
+      return next();
+    }
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const userId = decoded.id || decoded._id;
+    const user = await User.findById(userId);
+    if (user) {
+      req.userId = user._id.toString();
+      req.userRole = user.role;
+      req.user = user;
+    }
+  } catch {
+    // public access continues without a user
+  }
+  next();
+};
+
 module.exports = authenticateMiddleware;
+module.exports.optionalAuthenticate = optionalAuthenticate;

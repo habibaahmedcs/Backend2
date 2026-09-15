@@ -44,11 +44,14 @@ const attachOwnerStatus = async (user) => {
   const listings = await Restaurant.find({ owner: publicUser._id }).select("status").lean();
   const hasApproved = listings.some((item) => item.status === "approved");
   const hasPending = listings.some((item) => item.status === "pending");
+  const hasClosed = listings.some((item) => item.status === "rejected" || item.status === "deleted");
 
   if (hasApproved) {
     publicUser.ownerStatus = "approved";
   } else if (hasPending) {
     publicUser.ownerStatus = "pending";
+  } else if (hasClosed) {
+    publicUser.ownerStatus = "rejected";
   } else if (publicUser.ownerStatus) {
     publicUser.ownerStatus = publicUser.ownerStatus;
   } else {

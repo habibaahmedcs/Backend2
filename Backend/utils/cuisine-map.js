@@ -41,9 +41,7 @@ const cuisineQuery = (value) => {
   };
 };
 
-const parseMenuItems = (body) => {
-  if (!body) return undefined;
-  const raw = body.menu || body.menuItems;
+const parseJsonArray = (raw) => {
   if (raw === undefined || raw === null || raw === "") return undefined;
   if (Array.isArray(raw)) return raw;
   try {
@@ -54,4 +52,16 @@ const parseMenuItems = (body) => {
   }
 };
 
-module.exports = { CUISINE_GROUPS, normalizeCuisine, cuisineQuery, parseMenuItems };
+const parseMenuItems = (body) => {
+  if (!body) return undefined;
+  return parseJsonArray(body.menu) || parseJsonArray(body.menuItems);
+};
+
+const parseMenuCategories = (body) => {
+  if (!body) return undefined;
+  const parsed = parseJsonArray(body.menuCategories);
+  if (!parsed) return undefined;
+  return parsed.map((item) => String(item).trim()).filter(Boolean);
+};
+
+module.exports = { CUISINE_GROUPS, normalizeCuisine, cuisineQuery, parseMenuItems, parseMenuCategories };

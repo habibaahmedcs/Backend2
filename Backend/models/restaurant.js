@@ -97,6 +97,10 @@ const restaurantSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    menuCategories: {
+      type: [String],
+      default: [],
+    },
     menu: {
       type: [menuItemSchema],
       default: [],
@@ -115,8 +119,12 @@ const restaurantSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["pending", "approved", "rejected"],
+      enum: ["pending", "approved", "rejected", "deleted"],
       default: "pending",
+    },
+    deletedBy: {
+      type: String,
+      enum: ["admin", "vendor"],
     },
     owner: {
       type: mongoose.Schema.Types.ObjectId,

@@ -1,7 +1,7 @@
 const Restaurant = require("../models/restaurant");
 const User = require("../models/user");
-const { normalizeCuisine, cuisineQuery, parseMenuItems } = require("../utils/cuisine-map");
-const { firstFilePath, allFilePaths, applyMenuImages } = require("../utils/media");
+const { normalizeCuisine, cuisineQuery, parseMenuItems, parseMenuCategories } = require("../utils/cuisine-map");
+const { firstFilePath, allFilePaths, applyMenuImages, toPublicUrl, toStoredPath } = require("../utils/media");
 
 const buildPublicFilter = (query = {}) => {
   const filter = { status: "approved" };
@@ -55,6 +55,14 @@ const parseTags = (raw) => {
   return [];
 };
 
+const ownerIdOf = (restaurant) => {
+  if (!restaurant?.owner) return "";
+  if (typeof restaurant.owner === "object") {
+    return (restaurant.owner._id || restaurant.owner.id || "").toString();
+  }
+  return restaurant.owner.toString();
+};
+
 const parseGalleryKeep = (body) => {
   if (!body) return undefined;
   const raw = body.galleryKeep;
@@ -68,31 +76,60 @@ const parseGalleryKeep = (body) => {
   }
 };
 
+const applyDynamicRatings = (obj) => {
+  const reviews = Array.isArray(obj.reviews) ? obj.reviews : [];
+  const count = reviews.length;
+  obj.ratingsCount = count;
+  if (!count) {
+    obj.averageRating = 0;
+    obj.rating = 0;
+    return obj;
+  }
+  const sum = reviews.reduce((acc, review) => acc + Number(review.rating || 0), 0);
+  const average = Math.round((sum / count) * 10) / 10;
+  obj.averageRating = average;
+  obj.rating = average;
+  return obj;
+};
+
 const withImage = (restaurant) => {
   if (!restaurant) return restaurant;
   const obj = restaurant.toObject ? restaurant.toObject() : { ...restaurant };
-  obj.coverImage = obj.coverImage || obj.imageUrl || obj.image || "";
-  obj.thumbnail = obj.thumbnail || obj.imageUrl || obj.image || "";
-  obj.image = obj.thumbnail || obj.coverImage || obj.imageUrl || obj.image || "";
-  obj.imageUrl = obj.imageUrl || obj.coverImage || obj.thumbnail || obj.image || "";
-  obj.healthCertificate = obj.healthCertificate || "";
-  obj.gallery = Array.isArray(obj.gallery) ? obj.gallery.filter(Boolean) : [];
-  obj.rating = obj.averageRating || 0;
-  obj.menu = (obj.menu || []).map((item) => ({
-    ...item,
-    image: item.imageUrl || item.image || "",
-    imageUrl: item.imageUrl || item.image || "",
-  }));
+  obj.coverImage = toPublicUrl(obj.coverImage || obj.imageUrl || obj.image || "");
+  obj.thumbnail = toPublicUrl(obj.thumbnail || obj.imageUrl || obj.image || "");
+  obj.image = obj.thumbnail || obj.coverImage;
+  obj.imageUrl = obj.coverImage || obj.thumbnail;
+  obj.healthCertificate = toPublicUrl(obj.healthCertificate || "");
+  obj.gallery = Array.isArray(obj.gallery) ? obj.gallery.filter(Boolean).map(toPublicUrl) : [];
+  obj.menu = (obj.menu || []).map((item) => {
+    const image = toPublicUrl(item.imageUrl || item.image || "");
+    return { ...item, image, imageUrl: image };
+  });
   obj.menuItems = obj.menu;
+  obj.menuCategories = Array.isArray(obj.menuCategories) ? obj.menuCategories : [];
   obj.reviews = (obj.reviews || []).map((review) => {
     const populatedUser = review.user && typeof review.user === "object" ? review.user : null;
     return {
       ...review,
       userName: review.userName || `${populatedUser?.firstName || ""} ${populatedUser?.lastName || ""}`.trim() || "مستخدم",
-      userAvatar: review.userAvatar || populatedUser?.imageUrl || "",
+      userAvatar: toPublicUrl(review.userAvatar || populatedUser?.imageUrl || ""),
     };
   });
+  applyDynamicRatings(obj);
   return obj;
+};
+
+const ratingsProjection = {
+  $addFields: {
+    ratingsCount: { $size: { $ifNull: ["$reviews", []] } },
+    averageRating: {
+      $cond: [
+        { $gt: [{ $size: { $ifNull: ["$reviews", []] } }, 0] },
+        { $round: [{ $avg: "$reviews.rating" }, 1] },
+        0,
+      ],
+    },
+  },
 };
 
 const extractListingMedia = (req) => {
@@ -125,15 +162,20 @@ const getApprovedRestaurants = async (req, res) => {
     const filter = buildPublicFilter(req.query);
     const limit = Math.min(Number(req.query.limit) || 0, 50);
     const sortByRating = req.query.sort === "rating";
+    const ratedOnly = req.query.rated === "true" || req.query.rated === "1";
 
-    let query = Restaurant.find(filter);
-    query = sortByRating
-      ? query.sort({ averageRating: -1, ratingsCount: -1, createdAt: -1 })
-      : query.sort({ createdAt: -1 });
+    const pipeline = [{ $match: filter }, ratingsProjection];
+    if (ratedOnly) {
+      pipeline.push({ $match: { ratingsCount: { $gt: 0 }, averageRating: { $gt: 0 } } });
+    }
+    pipeline.push({
+      $sort: sortByRating
+        ? { averageRating: -1, ratingsCount: -1, createdAt: -1 }
+        : { createdAt: -1 },
+    });
+    if (limit) pipeline.push({ $limit: limit });
 
-    if (limit) query = query.limit(limit);
-
-    const approvedRestaurants = await query;
+    const approvedRestaurants = await Restaurant.aggregate(pipeline);
     res.status(200).json({
       status: "success",
       count: approvedRestaurants.length,
@@ -168,6 +210,7 @@ const createRestaurant = async (req, res) => {
     const owner = req.userId;
     const listingType = req.body.type === "home_kitchen" ? "home_kitchen" : "restaurant";
     const menu = applyMenuImages(parseMenuItems(req.body) || [], req);
+    const menuCategories = parseMenuCategories(req.body) || [];
 
     const newRestaurant = await Restaurant.create({
       name: req.body.name,
@@ -186,6 +229,7 @@ const createRestaurant = async (req, res) => {
       thumbnail,
       healthCertificate,
       gallery,
+      menuCategories,
       menu,
       owner,
       status: "pending",
@@ -215,6 +259,19 @@ const getRestaurantById = async (req, res) => {
       return res.status(404).json({ status: "error", message: "Restaurant not found" });
     }
 
+    const isOwner = ownerIdOf(restaurant) === req.userId;
+    const isAdmin = req.userRole === "admin";
+    if (restaurant.status !== "approved" && !isOwner && !isAdmin) {
+      return res.status(404).json({ status: "error", message: "Restaurant not found" });
+    }
+
+    const previousAverage = restaurant.averageRating;
+    const previousCount = restaurant.ratingsCount;
+    restaurant.recalculateRatings();
+    if (restaurant.averageRating !== previousAverage || restaurant.ratingsCount !== previousCount) {
+      await restaurant.save();
+    }
+
     res.status(200).json({
       status: "success",
       data: { restaurant: withImage(restaurant) },
@@ -238,6 +295,13 @@ const updateRestaurant = async (req, res) => {
       return res.status(403).json({
         status: "fail",
         message: "You are not authorized to update this restaurant",
+      });
+    }
+
+    if (req.userRole !== "admin" && (restaurant.status === "deleted" || restaurant.status === "rejected")) {
+      return res.status(403).json({
+        status: "fail",
+        message: "تم حذف/رفض هذا المطعم بواسطة الإدارة",
       });
     }
 
@@ -267,6 +331,8 @@ const updateRestaurant = async (req, res) => {
 
     const menu = parseMenuItems(req.body);
     if (menu) updates.menu = applyMenuImages(menu, req);
+    const menuCategories = parseMenuCategories(req.body);
+    if (menuCategories) updates.menuCategories = menuCategories;
 
     const media = extractListingMedia(req);
     if (media.cover) {
@@ -294,7 +360,7 @@ const updateRestaurant = async (req, res) => {
     const keptGallery = parseGalleryKeep(req.body);
     if (keptGallery || media.galleryUploads.length) {
       const baseGallery = keptGallery || restaurant.gallery || [];
-      updates.gallery = [...baseGallery, ...media.galleryUploads].filter(Boolean);
+      updates.gallery = [...baseGallery, ...media.galleryUploads].filter(Boolean).map(toStoredPath);
     }
 
     const updatedRestaurant = await Restaurant.findByIdAndUpdate(req.params.id, updates, {
@@ -317,15 +383,42 @@ const updateRestaurant = async (req, res) => {
 
 const deleteRestaurant = async (req, res) => {
   try {
-    const deletedRestaurant = await Restaurant.findByIdAndDelete(req.params.id);
-    if (!deletedRestaurant) {
+    const restaurant = await Restaurant.findById(req.params.id);
+    if (!restaurant) {
       return res.status(404).json({ status: "error", message: "Restaurant not found" });
+    }
+
+    const isOwner = restaurant.owner?.toString() === req.userId;
+    const isAdmin = req.userRole === "admin";
+    if (!isAdmin && !isOwner) {
+      return res.status(403).json({
+        status: "fail",
+        message: "You are not authorized to delete this restaurant",
+      });
+    }
+
+    restaurant.status = "deleted";
+    restaurant.deletedBy = isAdmin ? "admin" : "vendor";
+    await restaurant.save();
+
+    if (restaurant.owner) {
+      const stillApproved = await Restaurant.exists({
+        owner: restaurant.owner,
+        status: "approved",
+      });
+      const stillPending = await Restaurant.exists({
+        owner: restaurant.owner,
+        status: "pending",
+      });
+      await User.findByIdAndUpdate(restaurant.owner, {
+        ownerStatus: stillApproved ? "approved" : stillPending ? "pending" : "rejected",
+      });
     }
 
     res.status(200).json({
       status: "success",
       message: "Restaurant deleted",
-      data: { restaurant: withImage(deletedRestaurant) },
+      data: { restaurant: withImage(restaurant) },
     });
   } catch (error) {
     res.status(400).json({
@@ -338,10 +431,15 @@ const deleteRestaurant = async (req, res) => {
 const getMyRestaurants = async (req, res) => {
   try {
     const myRestaurants = await Restaurant.find({ owner: req.userId }).sort({ createdAt: -1 });
+    const formattedRestaurants = myRestaurants.map(withImage);
+    const primaryRestaurant = formattedRestaurants.length > 0 ? formattedRestaurants[0] : null;
+
     res.status(200).json({
       status: "success",
-      count: myRestaurants.length,
-      data: { restaurants: myRestaurants.map(withImage) },
+      count: formattedRestaurants.length,
+      restaurant: primaryRestaurant,
+      data: primaryRestaurant,
+      restaurants: formattedRestaurants
     });
   } catch (error) {
     res.status(400).json({
@@ -441,14 +539,6 @@ const rejectRestaurant = async (req, res) => {
   }
 };
 
-const ownerIdOf = (restaurant) => {
-  if (!restaurant?.owner) return "";
-  if (typeof restaurant.owner === "object") {
-    return (restaurant.owner._id || restaurant.owner.id || "").toString();
-  }
-  return restaurant.owner.toString();
-};
-
 const addReview = async (req, res) => {
   try {
     const restaurant = await Restaurant.findById(req.params.id);
@@ -457,9 +547,9 @@ const addReview = async (req, res) => {
     }
 
     if (restaurant.status !== "approved") {
-      return res.status(400).json({
-        status: "fail",
-        message: "You can only review approved listings",
+      return res.status(404).json({
+        status: "error",
+        message: "Restaurant not found",
       });
     }
 

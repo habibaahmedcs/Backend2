@@ -1,5 +1,30 @@
 const path = require("path");
 
+const PUBLIC_ORIGIN = (process.env.PUBLIC_ORIGIN || `http://localhost:${process.env.PORT || 3000}`).replace(
+  /\/$/,
+  ""
+);
+
+const toPublicUrl = (fileOrPath) => {
+  if (!fileOrPath) return "";
+  const raw = typeof fileOrPath === "string" ? fileOrPath : fileOrPath.path;
+  if (!raw) return "";
+  const value = String(raw).trim().replace(/\\/g, "/");
+  if (!value || value === "default-user.webp") return "";
+  if (
+    value.startsWith("http://") ||
+    value.startsWith("https://") ||
+    value.startsWith("data:") ||
+    value.startsWith("blob:") ||
+    value.startsWith("assets/")
+  ) {
+    return value;
+  }
+  const stored = toStoredPath(value);
+  if (!stored) return "";
+  return `${PUBLIC_ORIGIN}/${stored.replace(/^\/+/, "")}`;
+};
+
 const toStoredPath = (fileOrPath) => {
   if (!fileOrPath) return "";
   const raw = typeof fileOrPath === "string" ? fileOrPath : fileOrPath.path;
@@ -63,7 +88,9 @@ const applyMenuImages = (menu, req) => {
 };
 
 module.exports = {
+  PUBLIC_ORIGIN,
   toStoredPath,
+  toPublicUrl,
   collectFiles,
   firstFilePath,
   allFilePaths,
