@@ -1,28 +1,43 @@
 const jwt = require("jsonwebtoken");
+const User = require("../models/user");
 
-const authenticateMiddleware = (req, res, next) => {
+const authenticateMiddleware = async (req, res, next) => {
   try {
-    let token = req.headers.authorization;
-
-    if (!token || !token.startsWith("Bearer ")) {
+    const authHeader = req.headers.authorization || req.headers.Authorization;
+    if (!authHeader || typeof authHeader !== "string" || !authHeader.startsWith("Bearer ")) {
       return res.status(401).json({
         status: "fail",
-        message: "Unauthorized: No token provided",
+        message: "You are not logged in. Please provide a valid token.",
       });
     }
 
-    token = token.split(" ")[1];
+    const token = authHeader.split(" ")[1];
+    if (!token || token === "null" || token === "undefined") {
+      return res.status(401).json({
+        status: "fail",
+        message: "You are not logged in. Please provide a valid token.",
+      });
+    }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const userId = decoded.id || decoded._id;
+    const user = await User.findById(userId);
 
-    req.userId = decoded.id;
-    req.userRole = decoded.role;
+    if (!user) {
+      return res.status(401).json({
+        status: "fail",
+        message: "The user belonging to this token no longer exists.",
+      });
+    }
 
+    req.userId = user._id.toString();
+    req.userRole = user.role;
+    req.user = user;
     next();
   } catch (error) {
     return res.status(401).json({
       status: "fail",
-      message: "Invalid or expired token",
+      message: "Invalid or expired token. Please log in again.",
     });
   }
 };
